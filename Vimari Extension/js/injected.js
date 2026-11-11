@@ -43,6 +43,9 @@ var actionMap = {
 	'tabBack':
         function() { extensionCommunicator.requestTabBackward() },
 
+	'tabList':
+        function() { TabSwitcher.open(extensionCommunicator); },
+
 	'scrollDown':
 		function() { customScrollBy(0, settings.scrollSize); },
 
@@ -170,6 +173,8 @@ function bindKeyCodesToActions(settings) {
 		for (var actionName in actionMap) {
 			if (actionMap.hasOwnProperty(actionName)) {
 				var keyCode = getKeyCode(actionName);
+				// Older user settings files may lack newer actions.
+				if (!keyCode || keyCode.length === 0) { continue; }
 				Mousetrap.bind(keyCode, executeAction(actionName), 'keydown');
 			}
 		}
@@ -209,7 +214,7 @@ function enterInsertMode() {
 function executeAction(actionName) {
 	return function() {
 		// don't do anything if we're not supposed to
-		if (linkHintsModeActivated || !extensionActive || insertMode)
+		if (linkHintsModeActivated || !extensionActive || insertMode || TabSwitcher.isOpen())
 			return;
 
 		//Call the action function
@@ -254,8 +259,9 @@ function boundKeys() {
 // prevent custom key behaviour implemented by the underlying website.
 function stopSitePropagation() {
     return function (e) {
-        if (insertMode) {
-            // Never stop propagation in insert mode.
+        if (insertMode || TabSwitcher.isOpen()) {
+            // Never stop propagation in insert mode, or while the tab
+            // switcher owns the keyboard (it isolates its own events).
             return
         }
 
@@ -341,6 +347,8 @@ function isEmbed(element) { return ["EMBED", "OBJECT"].indexOf(element.tagName) 
 function messageHandler(event){
     if (event.name == "updateSettingsEvent") {
         setSettings(event.message);
+    } else if (event.name == "tabListEvent") {
+        TabSwitcher.setTabs(event.message.tabs);
     }
 }
 
@@ -407,6 +415,16 @@ function inIframe () {
 
 if(!inIframe()){
     extensionCommunicator.requestSettingsUpdate()
+
+    // Report tab activation so the tab switcher can order tabs by recency.
+    var reportIfVisible = function () {
+        if (document.visibilityState === "visible") {
+            extensionCommunicator.reportActive()
+        }
+    }
+    document.addEventListener("visibilitychange", reportIfVisible)
+    window.addEventListener("focus", reportIfVisible)
+    reportIfVisible()
 }
                                  
 // Export to make it testable

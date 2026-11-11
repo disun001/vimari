@@ -27,6 +27,7 @@
       "tabBack": "q",
       "closeTab": "x",
       "openTab": "t",
-      "duplicateTab": "y t"
+      "duplicateTab": "y t",
+      "tabList": "shift+t"
   }
 }

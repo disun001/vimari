@@ -56,6 +56,10 @@
 			</dict>
 			<dict>
 				<key>Script</key>
+				<string>tab-switcher.js</string>
+			</dict>
+			<dict>
+				<key>Script</key>
 				<string>injected.js</string>
 			</dict>
 		</array>

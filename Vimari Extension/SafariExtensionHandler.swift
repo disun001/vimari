@@ -6,6 +6,9 @@ enum ActionType: String {
     case tabBackward
     case closeTab
     case updateSettings
+    case requestTabList
+    case activateTab
+    case reportActive
 }
 
 enum InputAction: String {
@@ -61,6 +64,14 @@ class SafariExtensionHandler: SFSafariExtensionHandler {
             closeTab(from: page)
         case .updateSettings:
             updateSettings(page: page)
+        case .requestTabList:
+            sendTabList(from: page)
+        case .activateTab:
+            if let id = userInfo?["id"] as? String {
+                TabHistory.shared.listedTab(id: id)?.activate(completionHandler: {})
+            }
+        case .reportActive:
+            page.getContainingTab { TabHistory.shared.touch($0) }
         case .none:
             NSLog("Received message with unsupported type: \(messageName)")
         }
@@ -128,6 +139,58 @@ class SafariExtensionHandler: SFSafariExtensionHandler {
         }}
     }
     
+    /**
+     Collects title and URL of every tab in the current window (most recently used first)
+     and sends them to the requesting page as `tabListEvent`.
+     */
+    private func sendTabList(from page: SFSafariPage) {
+        page.getContainingTab { currentTab in
+            TabHistory.shared.touch(currentTab)
+            self.currentWindow(from: page) { window in
+                window?.getAllTabs { tabs in
+                    let ordered = TabHistory.shared.order(tabs)
+                    var entries = [[String: Any]](repeating: ["title": "", "url": ""], count: ordered.count)
+                    let lock = NSLock()
+                    let group = DispatchGroup()
+
+                    for (index, tab) in ordered.enumerated() {
+                        group.enter()
+                        tab.getActivePage { activePage in
+                            guard let activePage = activePage else {
+                                group.leave()
+                                return
+                            }
+                            activePage.getPropertiesWithCompletionHandler { properties in
+                                lock.lock()
+                                entries[index] = [
+                                    "title": properties?.title ?? "",
+                                    "url": properties?.url?.absoluteString ?? ""
+                                ]
+                                lock.unlock()
+                                group.leave()
+                            }
+                        }
+                    }
+
+                    group.notify(queue: .main) {
+                        var listed: [String: SFSafariTab] = [:]
+                        var payload: [[String: Any]] = []
+                        for (index, tab) in ordered.enumerated() {
+                            var entry = entries[index]
+                            let id = String(index)
+                            entry["id"] = id
+                            entry["current"] = (tab == currentTab)
+                            listed[id] = tab
+                            payload.append(entry)
+                        }
+                        TabHistory.shared.setListed(listed)
+                        page.dispatchMessageToScript(withName: "tabListEvent", userInfo: ["tabs": payload])
+                    }
+                }
+            }
+        }
+    }
+
     private func closeTab(from page: SFSafariPage) {
         page.getContainingTab {
             tab in
@@ -168,6 +231,42 @@ class SafariExtensionHandler: SFSafariExtensionHandler {
         } catch {
             NSLog(error.localizedDescription)
         }
+    }
+}
+
+// MARK: Tab history
+
+/// Tracks tab recency (reported by content scripts) and the tabs last sent to the tab switcher.
+private final class TabHistory {
+    static let shared = TabHistory()
+
+    private let lock = NSLock()
+    private var recent: [SFSafariTab] = []
+    private var listed: [String: SFSafariTab] = [:]
+
+    func touch(_ tab: SFSafariTab) {
+        lock.lock(); defer { lock.unlock() }
+        recent.removeAll { $0 == tab }
+        recent.insert(tab, at: 0)
+        if recent.count > 200 { recent.removeLast(recent.count - 200) }
+    }
+
+    /// Most recently used first, then any unseen tabs in tab-bar order.
+    func order(_ tabs: [SFSafariTab]) -> [SFSafariTab] {
+        lock.lock(); defer { lock.unlock() }
+        let known = recent.filter { tabs.contains($0) }
+        let unknown = tabs.filter { tab in !known.contains(tab) }
+        return known + unknown
+    }
+
+    func setListed(_ tabs: [String: SFSafariTab]) {
+        lock.lock(); defer { lock.unlock() }
+        listed = tabs
+    }
+
+    func listedTab(id: String) -> SFSafariTab? {
+        lock.lock(); defer { lock.unlock() }
+        return listed[id]
     }
 }
 
